@@ -1,5 +1,8 @@
 import express from 'express';
 import dotenv from 'dotenv';
+import { connectDatabase } from './src/server/config/database';
+import { OrderModel } from './src/server/models/Order';
+import { ReservationModel } from './src/server/models/Reservation';
 import { GoogleGenAI } from '@google/genai';
 import { createServer as createViteServer } from 'vite';
 import path from 'path';
@@ -191,118 +194,361 @@ Keep answers concise, warm, helpful, and polite. If the user wants to book or re
 });
 
 // 2. Orders Endpoints
-app.get('/api/orders', (req, res) => {
-  res.json(ordersStore);
+app.get('/api/orders', async (req, res) => {
+  try {
+    const orders = await OrderModel.find(
+      {},
+      { _id: 0 }
+    ).lean();
+
+    res.json(orders);
+  } catch (error) {
+    console.error('Failed to fetch orders:', error);
+    res.status(500).json({
+      error: 'Failed to retrieve orders'
+    });
+  }
 });
 
-app.post('/api/orders', (req, res) => {
-  const newOrder = req.body;
-  if (!newOrder || !newOrder.items) {
-    return res.status(400).json({ error: 'Invalid order structure' });
+app.post('/api/orders', async (req, res) => {
+  try {
+    const newOrder = req.body;
+
+    if (
+      !newOrder ||
+      !Array.isArray(newOrder.items) ||
+      newOrder.items.length === 0
+    ) {
+      return res.status(400).json({
+        error: 'Invalid order structure'
+      });
+    }
+
+    const order = await OrderModel.create(newOrder);
+
+    const savedOrder = order.toObject();
+    const { _id, ...response } = savedOrder;
+
+    res.status(201).json(response);
+  } catch (error: any) {
+    console.error('Failed to create order:', error);
+
+    if (error.code === 11000) {
+      return res.status(409).json({
+        error: 'Order ID or order number already exists'
+      });
+    }
+
+    if (error.name === 'ValidationError') {
+      return res.status(400).json({
+        error: 'Invalid order data'
+      });
+    }
+
+    res.status(500).json({
+      error: 'Failed to create order'
+    });
   }
-  ordersStore.unshift(newOrder);
-  res.status(201).json(newOrder);
 });
 
-app.patch('/api/orders/:id/status', (req, res) => {
-  const { id } = req.params;
-  const { status } = req.body;
-  const order = ordersStore.find(o => o.id === id);
-  if (!order) {
-    return res.status(404).json({ error: 'Order not found' });
-  }
-  order.status = status;
-  order.updatedAt = new Date().toISOString();
-  
-  // Update timeline
-  const step = order.timeline.find(s => s.status === status);
-  if (step) {
-    step.isCompleted = true;
-    step.isCurrent = true;
-    step.timestamp = 'Just now';
-  }
+app.patch('/api/orders/:id/status', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { status } = req.body ?? {};
 
-  res.json(order);
+    const allowedStatuses = [
+      'received',
+      'preparing',
+      'in_oven_grill',
+      'ready',
+      'out_for_delivery',
+      'completed',
+      'cancelled'
+    ];
+
+    if (!allowedStatuses.includes(status)) {
+      return res.status(400).json({
+        error: 'Invalid order status'
+      });
+    }
+
+    const order = await OrderModel.findOne({ id });
+
+    if (!order) {
+      return res.status(404).json({
+        error: 'Order not found'
+      });
+    }
+
+    order.status = status;
+    order.updatedAt = new Date().toISOString();
+
+    // Preserve existing timeline entries.
+    const timeline = order.timeline || [];
+
+    // Mark the selected tracking step as current.
+    for (const step of timeline) {
+      step.isCurrent = step.status === status;
+
+      if (step.status === status) {
+        step.isCompleted = true;
+        step.timestamp = 'Just now';
+      }
+    }
+
+    order.markModified('timeline');
+
+    await order.save();
+
+    const savedOrder = order.toObject();
+    const { _id, ...response } = savedOrder;
+
+    res.json(response);
+  } catch (error) {
+    console.error('Failed to update order status:', error);
+
+    res.status(500).json({
+      error: 'Failed to update order status'
+    });
+  }
 });
 
 // 3. Reservations Endpoints
-app.get('/api/reservations', (req, res) => {
-  res.json(reservationsStore);
+app.get('/api/reservations', async (req, res) => {
+  try {
+    const reservations = await ReservationModel.find(
+      {},
+      { _id: 0 }
+    ).lean();
+
+    res.json(reservations);
+  } catch (error) {
+    console.error('Failed to fetch reservations:', error);
+    res.status(500).json({
+      error: 'Failed to retrieve reservations'
+    });
+  }
 });
 
-app.post('/api/reservations', (req, res) => {
-  const newReservation = req.body;
-  if (!newReservation) {
-    return res.status(400).json({ error: 'Invalid reservation' });
+app.post('/api/reservations', async (req, res) => {
+  try {
+    const newReservation = req.body;
+
+    if (
+      !newReservation ||
+      typeof newReservation !== 'object' ||
+      !newReservation.id ||
+      !newReservation.reservationNumber ||
+      !newReservation.customerName ||
+      !newReservation.phone ||
+      !newReservation.email ||
+      !newReservation.date ||
+      !newReservation.time ||
+      !Number.isInteger(newReservation.guests) ||
+      newReservation.guests < 1 ||
+      !newReservation.zone
+    ) {
+      return res.status(400).json({
+        error: 'Invalid reservation data'
+      });
+    }
+
+    const reservation = await ReservationModel.create(newReservation);
+
+    const savedReservation = reservation.toObject();
+    const { _id, ...response } = savedReservation;
+
+    res.status(201).json(response);
+  } catch (error: any) {
+    console.error('Failed to create reservation:', error);
+
+    if (error.code === 11000) {
+      return res.status(409).json({
+        error: 'Reservation ID or number already exists'
+      });
+    }
+
+    if (error.name === 'ValidationError') {
+      return res.status(400).json({
+        error: 'Invalid reservation data'
+      });
+    }
+
+    res.status(500).json({
+      error: 'Failed to create reservation'
+    });
   }
-  reservationsStore.unshift(newReservation);
-  res.status(201).json(newReservation);
 });
 
-app.patch('/api/reservations/:id/status', (req, res) => {
-  const { id } = req.params;
-  const { status } = req.body;
-  const resv = reservationsStore.find(r => r.id === id);
-  if (!resv) {
-    return res.status(404).json({ error: 'Reservation not found' });
+app.patch('/api/reservations/:id/status', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { status } = req.body ?? {};
+
+    const allowedStatuses = [
+      'pending',
+      'confirmed',
+      'seated',
+      'completed',
+      'cancelled'
+    ];
+
+    if (
+      typeof status !== 'string' ||
+      !allowedStatuses.includes(status)
+    ) {
+      return res.status(400).json({
+        error: 'Invalid reservation status'
+      });
+    }
+
+    const reservation = await ReservationModel.findOneAndUpdate(
+      { id },
+      { $set: { status } },
+      {
+        new: true,
+        runValidators: true,
+        projection: { _id: 0 }
+      }
+    ).lean();
+
+    if (!reservation) {
+      return res.status(404).json({
+        error: 'Reservation not found'
+      });
+    }
+
+    res.json(reservation);
+  } catch (error) {
+    console.error('Failed to update reservation status:', error);
+
+    res.status(500).json({
+      error: 'Failed to update reservation status'
+    });
   }
-  resv.status = status;
-  res.json(resv);
 });
 
 // 4. Robust Analytics Backend
-app.get('/api/analytics', (req, res) => {
-  const totalRevenue = ordersStore.reduce((sum, o) => sum + (o.paymentStatus === 'paid' ? o.total : 0), 0);
-  res.json({
-    revenueToday: totalRevenue,
-    totalOrders: ordersStore.length,
-    activeGamingStations: 14,
-    totalGamingStations: 16,
-    activeReservations: reservationsStore.filter(r => r.status === 'confirmed').length,
-    avgPrepTimeMinutes: 14,
-    guestRating: 4.9
-  });
+app.get('/api/analytics', async (req, res) => {
+  try {
+    const [totalOrders, revenueResult, activeReservations] =
+      await Promise.all([
+        OrderModel.countDocuments(),
+
+        OrderModel.aggregate([
+          {
+            $match: {
+              paymentStatus: 'paid'
+            }
+          },
+          {
+            $group: {
+              _id: null,
+              total: { $sum: '$total' }
+            }
+          }
+        ]),
+
+        ReservationModel.countDocuments({
+          status: 'confirmed'
+        })
+      ]);
+
+    const totalRevenue = revenueResult[0]?.total ?? 0;
+
+    res.json({
+      revenueToday: totalRevenue,
+      totalOrders,
+      activeGamingStations: 14,
+      totalGamingStations: 16,
+      activeReservations,
+      avgPrepTimeMinutes: 14,
+      guestRating: 4.9
+    });
+  } catch (error) {
+    console.error('Failed to retrieve analytics:', error);
+
+    res.status(500).json({
+      error: 'Failed to retrieve analytics'
+    });
+  }
 });
 
 // 5. Direct Order Notification Dispatch
-app.post('/api/notify/order', (req, res) => {
-  const { orderId, channel, recipient } = req.body;
-  const order = ordersStore.find(o => o.id === orderId);
-  if (!order) {
-    return res.status(404).json({ error: 'Order not found' });
+app.post('/api/notify/order', async (req, res) => {
+  try {
+    const { orderId, channel, recipient } = req.body ?? {};
+
+    if (typeof orderId !== 'string' || !orderId.trim()) {
+      return res.status(400).json({
+        error: 'Valid order ID is required'
+      });
+    }
+
+    const order = await OrderModel.findOne(
+      { id: orderId },
+      { _id: 0 }
+    ).lean();
+
+    if (!order) {
+      return res.status(404).json({
+        error: 'Order not found'
+      });
+    }
+
+    // Generate a WhatsApp link without sending a message.
+    const message = `Hello ${order.customerName}, your Samprix Cafe N Gaming Zone order #${order.orderNumber} is currently: ${order.status.toUpperCase()}. Total: Rs. ${order.total}/-. Location: Basundhara Chowki.`;
+
+    const phone = order.phone.replace(/\D/g, '');
+    const whatsappPhone = phone.startsWith('977')
+      ? phone
+      : `977${phone.replace(/^0/, '')}`;
+
+    const whatsappUrl =
+      `https://wa.me/${whatsappPhone}?text=${encodeURIComponent(message)}`;
+
+    res.json({
+      success: true,
+      channel,
+      recipient,
+      statusText: order.status,
+      whatsappUrl,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('Failed to generate order notification:', error);
+
+    res.status(500).json({
+      error: 'Failed to generate order notification'
+    });
   }
-
-  // Pre-generate formatted WhatsApp direct message link
-  const message = `Hello ${order.customerName}, your Samprix Cafe N Gaming Zone order #${order.orderNumber} is currently: ${order.status.toUpperCase()}. Total: Rs. ${order.total}/-. Location: Basundhara Chowki.`;
-  const whatsappUrl = `https://wa.me/977${order.phone.replace(/[^0-9]/g, '')}?text=${encodeURIComponent(message)}`;
-
-  res.json({
-    success: true,
-    channel,
-    recipient,
-    statusText: order.status,
-    whatsappUrl,
-    timestamp: new Date().toISOString()
-  });
 });
 
 // Mount Vite middleware in development
 async function startServer() {
-  if (process.env.NODE_ENV !== 'production') {
-    const vite = await createViteServer({
-      server: { middlewareMode: true }
-    });
-    app.use(vite.middlewares);
-  } else {
-    app.use(express.static(path.resolve(__dirname, 'dist')));
-    app.get('*', (req, res) => {
-      res.sendFile(path.resolve(__dirname, 'dist', 'index.html'));
-    });
-  }
+  try {
+    // Connect to MongoDB Atlas before starting Express
+    await connectDatabase();
 
-  app.listen(PORT, '0.0.0.0', () => {
-    console.log(`🚀 Samprix Cafe Server running at http://localhost:${PORT}`);
-  });
+    if (process.env.NODE_ENV !== 'production') {
+      const vite = await createViteServer({
+        server: { middlewareMode: true }
+      });
+      app.use(vite.middlewares);
+    } else {
+      app.use(express.static(path.resolve(__dirname, 'dist')));
+      app.get('*', (req, res) => {
+        res.sendFile(path.resolve(__dirname, 'dist', 'index.html'));
+      });
+    }
+
+    app.listen(PORT, '0.0.0.0', () => {
+      console.log(`Samprix Cafe Server running at http://localhost:${PORT}`);
+    });
+  } catch (error) {
+    console.error('Failed to start Samprix Cafe server:', error);
+    process.exitCode = 1;
+  }
 }
 
 startServer();
