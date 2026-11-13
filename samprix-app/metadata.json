@@ -1,0 +1,6 @@
+{
+  "name": "Samprix Cafe & Gaming Zone",
+  "description": "Premium cafe & esports gaming zone offering artisanal coffees, gourmet burgers, wood-fired pizzas, authentic momos, live reservation booking, direct order tracking, and AI concierge.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
