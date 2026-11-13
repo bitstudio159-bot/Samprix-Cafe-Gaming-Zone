@@ -1,6 +1,5 @@
 import React, { useState } from 'react';
 import { Order, OrderStatus, Reservation, MenuItem } from '../types';
-import { MENU_ITEMS } from '../data/menuData';
 import { 
   LayoutDashboard, 
   ShoppingBag, 
@@ -20,6 +19,8 @@ import {
 } from 'lucide-react';
 
 interface AdminPanelProps {
+  menuItems: MenuItem[];
+  onMenuUpdated: () => Promise<void>;
   orders: Order[];
   reservations: Reservation[];
   onUpdateOrderStatus: (orderId: string, newStatus: OrderStatus) => void;
@@ -29,6 +30,8 @@ interface AdminPanelProps {
 }
 
 export const AdminPanel: React.FC<AdminPanelProps> = ({
+  menuItems,
+  onMenuUpdated,
   orders,
   reservations,
   onUpdateOrderStatus,
@@ -37,15 +40,91 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   onClose
 }) => {
   const [activeTab, setActiveTab] = useState<'orders' | 'reservations' | 'analytics' | 'menu'>('orders');
-  const [menuItemsState, setMenuItemsState] = useState<MenuItem[]>(MENU_ITEMS);
+  const [adminKey, setAdminKey] = useState('');
+  const [menuSaving, setMenuSaving] = useState<string | null>(null);
+  const [menuMessage, setMenuMessage] = useState('');
+  const [editing, setEditing] = useState<MenuItem | null>(null);
+  const [editName, setEditName] = useState('');
+  const [editImage, setEditImage] = useState('');
+const [imageUploading, setImageUploading] = useState(false);
+const [imageError, setImageError] = useState('');
+  const [editPrice, setEditPrice] = useState('');
+  const [editDescription, setEditDescription] = useState('');
+  const uploadMenuImage = async (file: File) => {
+  setImageError('');
+
+  if (!adminKey.trim()) {
+    setImageError('Please enter your Admin API key first.');
+    return;
+  }
+
+  if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type)) {
+    setImageError('Only JPG, PNG and WebP images are allowed.');
+    return;
+  }
+
+  if (file.size > 5 * 1024 * 1024) {
+    setImageError('Image must be smaller than 5 MB.');
+    return;
+  }
+
+  setImageUploading(true);
+
+  try {
+    const formData = new FormData();
+    formData.append('image', file);
+
+    const response = await fetch('/api/menu/upload-image', {
+      method: 'POST',
+      headers: {
+        'x-admin-key': adminKey
+      },
+      body: formData
+    });
+
+    const data = await response.json();
+
+    if (!response.ok || !data.imageUrl) {
+      throw new Error(data.error || 'Image upload failed');
+    }
+
+    setEditImage(data.imageUrl);
+    setMenuMessage('Image uploaded. Click Save to MongoDB to attach it to this item.');
+  } catch (error) {
+    setImageError(
+      error instanceof Error ? error.message : 'Image upload failed'
+    );
+  } finally {
+    setImageUploading(false);
+  }
+};
+  const saveMenuItem = async (id: string, changes: Record<string, unknown>) => {
+    if (!adminKey) { setMenuMessage('Enter your admin key to save changes.'); return; }
+    setMenuSaving(id);
+    setMenuMessage('');
+    try {
+      const response = await fetch(`/api/menu/${encodeURIComponent(id)}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', 'x-admin-key': adminKey },
+        body: JSON.stringify(changes)
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || 'Unable to save');
+      await onMenuUpdated();
+      setEditing(null);
+      setMenuMessage('Saved to MongoDB successfully.');
+    } catch (error) {
+      setMenuMessage(error instanceof Error ? error.message : 'Unable to save');
+    } finally { setMenuSaving(null); }
+  };
 
   // Compute analytics metrics
   const totalRevenue = orders.reduce((sum, o) => sum + (o.paymentStatus === 'paid' ? o.total : 0), 0);
   const pendingOrders = orders.filter(o => o.status !== 'completed' && o.status !== 'cancelled').length;
   const activeReservations = reservations.filter(r => r.status === 'confirmed').length;
 
-  const handleTogglePopular = (id: string) => {
-    setMenuItemsState(prev => prev.map(item => item.id === id ? { ...item, isPopular: !item.isPopular } : item));
+  const handleTogglePopular = (item: MenuItem) => {
+    void saveMenuItem(item.id, { isPopular: !item.isPopular });
   };
 
   return (
@@ -358,22 +437,126 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
         {/* TAB 4: MENU MANAGER */}
         {activeTab === 'menu' && (
           <div className="space-y-4">
-            <h3 className="text-xl font-bold font-display text-white">Menu Item Availability & Specials</h3>
+            <h3 className="text-xl font-bold font-display text-white">MongoDB Menu Manager ({menuItems.length} items)</h3>
+            <label className="block text-xs text-slate-300">Admin API key (kept in memory only)
+              <input type="password" autoComplete="off" value={adminKey} onChange={e => setAdminKey(e.target.value)} placeholder="Enter ADMIN_API_KEY" className="mt-1 block w-full max-w-sm bg-slate-800 border border-slate-700 text-white rounded-lg px-3 py-2" />
+            </label>
+            {menuMessage && <p role="status" className="text-sm text-amber-300">{menuMessage}</p>}
+            {editing && <form
+  onSubmit={e => {
+    e.preventDefault();
+    if (imageUploading) return;
+
+    void saveMenuItem(editing.id, {
+      name: editName.trim(),
+      price: Number(editPrice),
+      description: editDescription,
+      image: editImage
+    });
+  }}
+  className="p-4 bg-slate-900 border border-amber-600 rounded-xl space-y-3"
+>
+              <h4 className="font-bold text-white">Edit {editing.name}</h4>
+              <input required maxLength={150} value={editName} onChange={e => setEditName(e.target.value)} aria-label="Item name" className="w-full p-2 rounded bg-slate-800 text-white" />
+              <input required type="number" min="0" step="1" value={editPrice} onChange={e => setEditPrice(e.target.value)} aria-label="Price in rupees" className="w-full p-2 rounded bg-slate-800 text-white" />
+              <textarea value={editDescription} onChange={e => setEditDescription(e.target.value)} aria-label="Description" className="w-full p-2 rounded bg-slate-800 text-white" />
+                <div className="space-y-3">
+  <label className="block text-sm font-semibold text-white">
+    Menu Item Image
+  </label>
+
+  {editImage && (
+    <img
+      src={editImage}
+      alt="Menu item preview"
+      className="w-40 h-40 object-cover rounded-xl border border-slate-700"
+    />
+  )}
+
+  <input
+    type="file"
+    accept="image/jpeg,image/png,image/webp"
+    disabled={imageUploading || menuSaving !== null}
+    onChange={e => {
+      const file = e.target.files?.[0];
+      if (file) void uploadMenuImage(file);
+      e.currentTarget.value = '';
+    }}
+    className="block w-full text-sm text-slate-300"
+  />
+
+  {imageUploading && (
+    <p className="text-amber-400 text-sm">
+      Uploading image to Cloudinary...
+    </p>
+  )}
+
+  {imageError && (
+    <p role="alert" className="text-red-400 text-sm">
+      {imageError}
+    </p>
+  )}
+</div>
+              <button
+  type="submit"
+  disabled={menuSaving !== null || imageUploading}
+  className="px-4 py-2 bg-amber-500 rounded-lg text-slate-950 font-bold disabled:opacity-50"
+>
+  {imageUploading ? 'Uploading Image...' : 'Save to MongoDB'}
+</button>
+              <button type="button" onClick={() => setEditing(null)} className="ml-3 text-slate-300">Cancel</button>
+            </form>}
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-              {menuItemsState.slice(0, 18).map((item) => (
+              {menuItems.map((item) => (
                 <div key={item.id} className="p-4 rounded-xl bg-slate-900 border border-slate-800 flex items-center justify-between">
-                  <div>
-                    <h5 className="text-sm font-bold text-white">{item.name}</h5>
-                    <div className="text-xs text-amber-400 font-mono">Rs. {item.price}/-</div>
-                  </div>
+                  <div className="flex items-center gap-3">
+  {item.image ? (
+    <img
+      src={item.image}
+      alt={item.name}
+      loading="lazy"
+      className="w-16 h-16 object-cover rounded-lg border border-slate-700"
+    />
+  ) : (
+    <div className="w-16 h-16 rounded-lg bg-slate-800 flex items-center justify-center text-xs text-slate-400">
+      No Image
+    </div>
+  )}
+
+  <div>
+    <h5 className="text-sm font-bold text-white">
+      {item.name}
+    </h5>
+
+    <div className="text-xs text-amber-400 font-mono">
+      Rs. {item.price}/-
+    </div>
+  </div>
+</div>
+                  <div className="flex items-center gap-2">
                   <button
-                    onClick={() => handleTogglePopular(item.id)}
+  onClick={() => {
+    setEditing(item);
+    setEditName(item.name);
+    setEditPrice(String(item.price));
+    setEditDescription(item.description);
+    setEditImage(item.image || '');
+    setImageError('');
+  }}
+  className="px-2.5 py-1 rounded-lg text-xs bg-slate-700 text-white"
+>
+  Edit
+</button>
+                  <button
+                    disabled={menuSaving !== null}
+                    onClick={() => handleTogglePopular(item)}
                     className={`px-2.5 py-1 rounded-lg text-xs font-bold transition ${
                       item.isPopular ? 'bg-amber-400 text-slate-950' : 'bg-slate-800 text-slate-400'
                     }`}
                   >
                     {item.isPopular ? '★ Popular' : 'Normal'}
                   </button>
+                  </div>
                 </div>
               ))}
             </div>

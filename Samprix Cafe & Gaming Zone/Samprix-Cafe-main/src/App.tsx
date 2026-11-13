@@ -27,6 +27,20 @@ import confetti from 'canvas-confetti';
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<string>('home');
+  const [menuItems, setMenuItems] = useState<MenuItem[]>(MENU_ITEMS);
+  const [menuError, setMenuError] = useState('');
+  const refreshMenu = async () => {
+    try {
+      const response = await fetch('/api/menu');
+      if (!response.ok) throw new Error('Menu API unavailable');
+      const items: MenuItem[] = await response.json();
+      setMenuItems(items);
+      setMenuError('');
+    } catch {
+      setMenuError('Live menu unavailable. Showing saved sample menu.');
+    }
+  };
+  useEffect(() => { void refreshMenu(); }, []);
   const [isDark, setIsDark] = useState<boolean>(true);
   const [isAdminOpen, setIsAdminOpen] = useState<boolean>(false);
   const [isLoyaltyOpen, setIsLoyaltyOpen] = useState<boolean>(false);
@@ -366,7 +380,7 @@ export default function App() {
             />
 
             {/* Featured Menu Teaser */}
-            <MenuSection onAddToCart={handleAddToCart} isDark={isDark} />
+            <MenuSection onAddToCart={handleAddToCart} isDark={isDark} items={menuItems} menuError={menuError} />
 
             {/* Table & Gaming Rig Booking */}
             <BookingSection onReservationCreated={handleReservationCreated} isDark={isDark} />
@@ -390,7 +404,7 @@ export default function App() {
 
         {activeTab === 'menu' && (
           <div className="pt-4">
-            <MenuSection onAddToCart={handleAddToCart} isDark={isDark} />
+            <MenuSection onAddToCart={handleAddToCart} isDark={isDark} items={menuItems} menuError={menuError} />
           </div>
         )}
 
@@ -488,6 +502,8 @@ export default function App() {
       {/* Admin Panel Modal */}
       {isAdminOpen && (
         <AdminPanel
+          menuItems={menuItems}
+          onMenuUpdated={refreshMenu}
           orders={orders}
           reservations={reservations}
           onUpdateOrderStatus={handleUpdateOrderStatus}

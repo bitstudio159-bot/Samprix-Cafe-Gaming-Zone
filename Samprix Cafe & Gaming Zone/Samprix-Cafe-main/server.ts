@@ -1,8 +1,11 @@
 import express from 'express';
 import dotenv from 'dotenv';
+import multer from 'multer';
+import { v2 as cloudinary } from 'cloudinary';
 import { connectDatabase } from './src/server/config/database';
 import { OrderModel } from './src/server/models/Order';
 import { ReservationModel } from './src/server/models/Reservation';
+import { MenuItemModel } from './src/server/models/MenuItem';
 import { GoogleGenAI } from '@google/genai';
 import { createServer as createViteServer } from 'vite';
 import path from 'path';
@@ -11,6 +14,24 @@ import fs from 'fs';
 dotenv.config();
 
 const app = express();
+cloudinary.config({
+  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+  api_key: process.env.CLOUDINARY_API_KEY,
+  api_secret: process.env.CLOUDINARY_API_SECRET,
+  secure: true,
+});
+
+const menuImageUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024 },
+  fileFilter: (_req, file, callback) => {
+    if (['image/jpeg', 'image/png', 'image/webp'].includes(file.mimetype)) {
+      callback(null, true);
+    } else {
+      callback(new Error('Only JPG, PNG and WebP images are allowed'));
+    }
+  },
+});
 const PORT = 3000;
 
 app.use(express.json());
@@ -132,6 +153,117 @@ if (process.env.GEMINI_API_KEY) {
     }
   });
 }
+
+// Public menu data comes from MongoDB. Mutations require a server-side admin key.
+app.get('/api/menu', async (_req, res) => {
+  try {
+    const items = await MenuItemModel.find({}, { _id: 0, __v: 0 }).sort({ category: 1, name: 1 }).lean();
+    res.json(items);
+  } catch (error) {
+    console.error('Menu fetch failed:', error);
+    res.status(500).json({ error: 'Unable to load menu' });
+  }
+});
+
+app.patch('/api/menu/:id', async (req, res) => {
+  const configuredKey = process.env.ADMIN_API_KEY;
+  if (!configuredKey || req.get('x-admin-key') !== configuredKey) {
+    return res.status(401).json({ error: 'Admin authorization required' });
+  }
+  const allowed = ['name', 'description', 'price', 'isPopular', 'isVegetarian', 'isSpicy', 'image', 'preparationTimeMinutes'];
+  const changes: Record<string, unknown> = {};
+  for (const key of allowed) {
+    if (Object.prototype.hasOwnProperty.call(req.body ?? {}, key)) changes[key] = req.body[key];
+  }
+  if (!Object.keys(changes).length) return res.status(400).json({ error: 'No editable fields supplied' });
+  if (changes.name !== undefined && (typeof changes.name !== 'string' || !changes.name.trim())) return res.status(400).json({ error: 'Invalid name' });
+  if (changes.description !== undefined && typeof changes.description !== 'string') return res.status(400).json({ error: 'Invalid description' });
+  if (changes.image !== undefined && typeof changes.image !== 'string') return res.status(400).json({ error: 'Invalid image' });
+  for (const key of ['price', 'preparationTimeMinutes']) {
+    if (changes[key] !== undefined && (typeof changes[key] !== 'number' || !Number.isFinite(changes[key]) || (changes[key] as number) < 0)) {
+      return res.status(400).json({ error: `Invalid ${key}` });
+    }
+  }
+  for (const key of ['isPopular', 'isVegetarian', 'isSpicy']) {
+    if (changes[key] !== undefined && typeof changes[key] !== 'boolean') return res.status(400).json({ error: `Invalid ${key}` });
+  }
+  try {
+    const item = await MenuItemModel.findOneAndUpdate({ id: req.params.id }, { $set: changes }, { new: true, runValidators: true }).lean();
+    if (!item) return res.status(404).json({ error: 'Menu item not found' });
+    res.json(item);
+  } catch (error) {
+    console.error('Menu update failed:', error);
+    res.status(500).json({ error: 'Unable to save menu item' });
+  }
+});
+
+app.post('/api/menu/upload-image', (req, res) => {
+  // Only authorized admins can upload images.
+  const configuredKey = process.env.ADMIN_API_KEY;
+
+  if (!configuredKey || req.get('x-admin-key') !== configuredKey) {
+    return res.status(401).json({
+      error: 'Admin authorization required'
+    });
+  }
+
+  menuImageUpload.single('image')(req, res, async (uploadError) => {
+    if (uploadError) {
+      return res.status(400).json({
+        error: uploadError.message || 'Invalid image upload'
+      });
+    }
+
+    if (!req.file) {
+      return res.status(400).json({
+        error: 'Please select an image'
+      });
+    }
+
+    if (
+      !process.env.CLOUDINARY_CLOUD_NAME ||
+      !process.env.CLOUDINARY_API_KEY ||
+      !process.env.CLOUDINARY_API_SECRET
+    ) {
+      return res.status(503).json({
+        error: 'Cloudinary is not configured'
+      });
+    }
+
+    try {
+      const result = await new Promise<string>((resolve, reject) => {
+        const stream = cloudinary.uploader.upload_stream(
+          {
+            folder: 'samprix/menu',
+            resource_type: 'image'
+          },
+          (error, result) => {
+            if (error || !result) {
+              reject(error || new Error('Upload failed'));
+              return;
+            }
+
+            resolve(result.secure_url);
+          }
+        );
+
+        stream.end(req.file!.buffer);
+      });
+
+      return res.json({
+        success: true,
+        imageUrl: result
+      });
+
+    } catch (error) {
+      console.error('Cloudinary upload failed:', error);
+
+      return res.status(500).json({
+        error: 'Unable to upload image'
+      });
+    }
+  });
+});
 
 // 1. AI Concierge Chatbot Endpoint
 app.post('/api/chat', async (req, res) => {

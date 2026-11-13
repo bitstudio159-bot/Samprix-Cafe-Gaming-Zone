@@ -1,14 +1,16 @@
 import React, { useState, useMemo } from 'react';
 import { MenuItem, CategoryId, CartItem } from '../types';
-import { MENU_ITEMS, CATEGORIES } from '../data/menuData';
+import { CATEGORIES } from '../data/menuData';
 import { Search, Plus, Star, Clock, Flame, Leaf, Check, ShoppingBag, Eye, X } from 'lucide-react';
 
 interface MenuSectionProps {
   onAddToCart: (item: MenuItem, size?: string, notes?: string, customPrice?: number) => void;
   isDark: boolean;
+  items: MenuItem[];
+  menuError?: string;
 }
 
-export const MenuSection: React.FC<MenuSectionProps> = ({ onAddToCart, isDark }) => {
+export const MenuSection: React.FC<MenuSectionProps> = ({ onAddToCart, isDark, items, menuError }) => {
   const [selectedCategory, setSelectedCategory] = useState<CategoryId>('all');
   const [searchQuery, setSearchQuery] = useState('');
   const [vegetarianOnly, setVegetarianOnly] = useState(false);
@@ -23,7 +25,7 @@ export const MenuSection: React.FC<MenuSectionProps> = ({ onAddToCart, isDark })
 
   // Filtered menu
   const filteredItems = useMemo(() => {
-    return MENU_ITEMS.filter((item) => {
+    return items.filter((item) => {
       // Category filter
       if (selectedCategory !== 'all' && item.category !== selectedCategory) {
         return false;
@@ -43,7 +45,7 @@ export const MenuSection: React.FC<MenuSectionProps> = ({ onAddToCart, isDark })
 
       return true;
     });
-  }, [selectedCategory, searchQuery, vegetarianOnly, spicyOnly, popularOnly]);
+  }, [items, selectedCategory, searchQuery, vegetarianOnly, spicyOnly, popularOnly]);
 
   const handleOpenItemModal = (item: MenuItem) => {
     setSelectedItemForModal(item);
@@ -98,6 +100,7 @@ export const MenuSection: React.FC<MenuSectionProps> = ({ onAddToCart, isDark })
     <section id="menu" className="py-12 sm:py-16">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         
+        {menuError && <p role="status" className="mb-4 text-center text-amber-300 text-sm">{menuError}</p>}
         {/* Section Header */}
         <div className="text-center max-w-3xl mx-auto mb-10 space-y-3">
           <div className="text-xs font-bold uppercase tracking-wider text-amber-500">

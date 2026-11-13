@@ -19,10 +19,24 @@ if (dnsServers?.length) {
   console.log('MongoDB DNS workaround enabled');
 }
 
+  try {
   await mongoose.connect(uri, {
-    dbName,
-    serverSelectionTimeoutMS: 15000
-  });
+  dbName,
+  serverSelectionTimeoutMS: 15000
+});
+} catch (error: any) {
+  console.error('MongoDB connection details:');
+
+  for (const [host, server] of error.reason?.servers ?? []) {
+    console.error(host, {
+      type: server.type,
+      error: server.error?.message,
+      code: server.error?.code
+    });
+  }
+
+  throw error;
+}
 
   await mongoose.connection.db!.admin().ping();
 
